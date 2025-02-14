@@ -5,10 +5,10 @@
 #define SENSOR_PIN 14  // Pin del sensor de flujo
 #define RELAY_PIN 5     // Pin del relé que controla la válvula
 
-const char* ssid = "Suda";
-const char* password = "";
-const char* serverName = "http://10.0.1.197:3000/sensor";
-const char* toggleValveEndpoint = "http://10.0.1.197:3000/sensor/toggle-valve";
+const char* ssid = "TP-Link_8EBD";
+const char* password = "68399658";
+const char* serverName = "http://192.168.0.103:3000/sensor";
+const char* valveStatusEndpoint = "http://192.168.0.103:3000/sensor/valve-status";
 
 volatile int pulseCount = 0;
 float flowRate = 0.0;
@@ -60,29 +60,31 @@ String getFormattedTime() {
 void checkValveStatus() {
     if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http;
-        http.begin(toggleValveEndpoint);
+        http.begin(valveStatusEndpoint);
         int httpResponseCode = http.GET();
 
+          
         if (httpResponseCode > 0) {
             String response = http.getString();
-            Serial.println(httpResponseCode);
-            Serial.println(response);
+            Serial.println("Respuesta del servidor: " + response);
 
-            if (response.indexOf("\"status\":true") != -1) {
-                digitalWrite(RELAY_PIN, HIGH); // Abrir válvula
-                Serial.println("Electroválvula: ABIERTA ✅");
+            // Parsear la respuesta de manera más robusta
+            if (response.indexOf("true") != -1) {
+                // Forzar la apertura de la válvula independientemente del estado anterior
+                digitalWrite(RELAY_PIN, HIGH);
                 isValveClosed = false;
-            } else if (response.indexOf("\"status\":false") != -1) {
-                digitalWrite(RELAY_PIN, LOW); // Cerrar válvula
-                Serial.println("Electroválvula: CERRADA ❌");
+                lowFlowStart = 0;  // Reiniciar detectores de flujo
+                highFlowStart = 0;
+                Serial.println("✅ Válvula ABIERTA por comando del servidor");
+            } else if (response.indexOf("false") != -1) {
+                digitalWrite(RELAY_PIN, LOW);
                 isValveClosed = true;
+                Serial.println("❌ Válvula CERRADA por comando del servidor");
             }
-        } else {
-            Serial.print("Error on sending GET: ");
-            Serial.println(httpResponseCode);
         }
-
         http.end();
+    } else {
+        Serial.println("Error: No hay conexión WiFi");
     }
 }
 
@@ -103,37 +105,72 @@ void loop() {
         Serial.print(totalLiters);
         Serial.println(" L");
 
-        // --- Lógica para el control de la válvula ---
-        if (flowRate >= 20) {  // Si el flujo supera 0.02 L/min (20 mL/s)
-            if (highFlowStart == 0) {
-                highFlowStart = millis();  // Guardar el tiempo de inicio del flujo alto
-            } else if (millis() - highFlowStart >= 5000) {  // Si han pasado 5 segundos seguidos
-                digitalWrite(RELAY_PIN, LOW);  // Cerrar válvula
-                Serial.println("❌ ¡ALERTA! Consumo excesivo detectado. CERRANDO VÁLVULA ❌");
-                isValveClosed = true;
-            }
-        } else {
-            highFlowStart = 0;  // Reiniciar contador de flujo alto
-        }
 
-        if (flowRate > 0 && flowRate < 83.33) {  // Flujo bajo detectado (posible fuga 5 L/min)
-            if (lowFlowStart == 0) {
-                lowFlowStart = millis();  // Guardar el tiempo de inicio del flujo bajo
-            } else if (millis() - lowFlowStart >= 15000) {  // Si han pasado 15 segundos seguidos
-                digitalWrite(RELAY_PIN, LOW); // Cerrar válvula
-                Serial.println("⚠️ ¡ALERTA! Posible fuga detectada. CERRANDO VÁLVULA ⚠️");
-                isValveClosed = true;
-            }
-        } else {
-            lowFlowStart = 0; // Reiniciar contador de flujo bajo
-        }
+// --- Lógica para el control de la válvula ---
+if (flowRate >= 20) {  // Si el flujo supera 20 mL/s
+    if (highFlowStart == 0) {
+        highFlowStart = millis();  // Guardar el tiempo de inicio del flujo alto
+        Serial.println("⚠️ Detectando flujo alto... iniciando conteo");
+    } else if (millis() - highFlowStart >= 5000) {  // Si han pasado 5 segundos seguidos
+        digitalWrite(RELAY_PIN, LOW);  // Cerrar válvula
+        isValveClosed = true;
+        Serial.println("❌ ¡ALERTA! Consumo excesivo detectado. CERRANDO VÁLVULA ❌");
+        
+        // Enviar actualización al servidor
+        HTTPClient http;
+        http.begin(serverName);
+        http.addHeader("Content-Type", "application/json");
+        String jsonData = "{\"timestamp\":\"" + getFormattedTime() + 
+                         "\",\"leak_status\":false,\"high_consumption\":true," +
+                         "\"valve_status\":false,\"location\":\"baño\",\"user_id\":1," +
+                         "\"flowRate\":" + String(flowRate) + 
+                         ",\"totalLiters\":" + String(totalLiters) + "}";
+        http.POST(jsonData);
+        http.end();
+    }
+} else {
+    if (highFlowStart != 0) {
+        Serial.println("Flujo alto normalizado, reiniciando conteo");
+    }
+    highFlowStart = 0;  // Reiniciar contador de flujo alto
+}
 
-        if (flowRate == 0 || (flowRate >= 83.33 && flowRate < 100)) {  // Flujo normal (sin flujo o mayor a 5L/min y menor a 6L/min)
-            if (!isValveClosed) {
-                digitalWrite(RELAY_PIN, HIGH);  // Mantener válvula abierta
-                Serial.println("Electroválvula: ABIERTA ✅");
-            }
-        }
+// Detección de fugas (flujo bajo constante)
+if (flowRate > 0 && flowRate < 83.33) {  // Flujo bajo detectado
+    if (lowFlowStart == 0) {
+        lowFlowStart = millis();  // Guardar el tiempo de inicio del flujo bajo
+        Serial.println("⚠️ Detectando posible fuga... iniciando conteo");
+    } else if (millis() - lowFlowStart >= 15000) {  // Si han pasado 15 segundos seguidos
+        digitalWrite(RELAY_PIN, LOW); // Cerrar válvula
+        isValveClosed = true;
+        Serial.println("⚠️ ¡ALERTA! Posible fuga detectada. CERRANDO VÁLVULA ⚠️");
+        
+        // Enviar actualización al servidor
+        HTTPClient http;
+        http.begin(serverName);
+        http.addHeader("Content-Type", "application/json");
+        String jsonData = "{\"timestamp\":\"" + getFormattedTime() + 
+                         "\",\"leak_status\":true,\"high_consumption\":false," +
+                         "\"valve_status\":false,\"location\":\"baño\",\"user_id\":1," +
+                         "\"flowRate\":" + String(flowRate) + 
+                         ",\"totalLiters\":" + String(totalLiters) + "}";
+        http.POST(jsonData);
+        http.end();
+    }
+} else {
+    if (lowFlowStart != 0) {
+        Serial.println("Flujo bajo normalizado, reiniciando conteo");
+    }
+    lowFlowStart = 0; // Reiniciar contador de flujo bajo
+}
+
+// Solo mantener la válvula abierta si no hay condiciones de alarma
+if (flowRate == 0 || (flowRate >= 83.33 && flowRate < 100)) {  // Flujo normal
+    if (!isValveClosed) {
+        digitalWrite(RELAY_PIN, HIGH);  // Mantener válvula abierta
+        Serial.println("Electroválvula: ABIERTA ✅");
+    }
+}
 
         // Enviar datos al backend
         if (WiFi.status() == WL_CONNECTED) {
@@ -169,7 +206,13 @@ void loop() {
     }
 
     // Verificar el estado de la válvula cada 5 segundos
-    if (millis() - lastTime >= 1000) {
+    static unsigned long lastValveCheck = 0;
+    if (millis() - lastValveCheck >= 1000) {
+        lastValveCheck = millis();
         checkValveStatus();
+
+        // Imprimir estado actual para debug
+        Serial.print("Estado actual de la válvula: ");
+        Serial.println(isValveClosed ? "CERRADA" : "ABIERTA");
     }
 }
