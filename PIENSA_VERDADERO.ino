@@ -42,7 +42,7 @@ void setup() {
     Serial.println("Connected to WiFi");
 
     // Configurar el tiempo
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    configTime(-5 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 }
 
 String getFormattedTime() {
@@ -53,7 +53,7 @@ String getFormattedTime() {
         return "";
     }
     char timeStringBuff[50];
-    strftime(timeStringBuff, sizeof(timeStringBuff), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+    strftime(timeStringBuff, sizeof(timeStringBuff), "%Y-%m-%dT%H:%M:%S-05:00", &timeinfo);
     return String(timeStringBuff);
 }
 
@@ -183,7 +183,7 @@ if (flowRate == 0 || (flowRate >= 83.33 && flowRate < 100)) {  // Flujo normal
             bool leak_status = (flowRate > 0 && flowRate < 20); // Reducimos el umbral para detectar fugas
             bool high_consumption = (flowRate >= 50); // Ajustamos el umbral de consumo alto
 
-            String jsonData = "{\"timestamp\":\"" + timestamp + "\",\"leak_status\":" + (leak_status ? "true" : "false") + ",\"high_consumption\":" + (high_consumption ? "true" : "false") + ",\"valve_status\":" + (!isValveClosed ? "true" : "false") + ",\"location\":\"baño\",\"user_id\":1,\"flowRate\":" + String(flowRate) + ",\"totalLiters\":" + String(totalLiters) + "}";
+            String jsonData = "{\"timestamp\":\"" + timestamp + "\",\"leak_status\":" + (leak_status ? "true" : "false") + ",\"high_consumption\":" + (high_consumption ? "true" : "false") + ",\"valve_status\":" + (!isValveClosed ? "true" : "false") + ",\"location\":\"Baño Principal\",\"user_id\":1,\"flowRate\":" + String(flowRate) + ",\"totalLiters\":" + String(totalLiters) + "}";
 
 
             int httpResponseCode = http.POST(jsonData);
@@ -205,9 +205,9 @@ if (flowRate == 0 || (flowRate >= 83.33 && flowRate < 100)) {  // Flujo normal
         attachInterrupt(digitalPinToInterrupt(SENSOR_PIN), countPulses, FALLING);
     }
 
-    // Verificar el estado de la válvula cada 5 segundos
+    // Verificar el estado de la válvula cada 2 segundos
     static unsigned long lastValveCheck = 0;
-    if (millis() - lastValveCheck >= 1000) {
+    if (millis() - lastValveCheck >= 2000) {
         lastValveCheck = millis();
         checkValveStatus();
 
